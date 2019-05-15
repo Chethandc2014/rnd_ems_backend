@@ -11,11 +11,13 @@
 	<groupId>com.ems</groupId>
 	<artifactId>ems</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
+	<!--<packaging>war</packaging> --> <!-- Used for Deploment into Other container-->
 	<name>ems</name>
 	<description>Demo project for Spring Boot</description>
 
 	<properties>
 		<java.version>1.8</java.version>
+		<!-- <start-class>com.ems.EmsApplication</start-class> -->    <!-- Used to configure to Run in Other container -->
 	</properties>
 
 	<dependencies>
@@ -23,6 +25,12 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-data-jpa</artifactId>
 		</dependency>
+
+	<!--<dependency> 
+	     <groupId>org.springframework.boot</groupId> 
+	     <artifactId>spring-boot-starter-tomcat</artifactId>   
+		  <scope>provided</scope> 
+	  </dependency> -->   <!-- Used to configure to Run in Other container -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-data-rest</artifactId>
