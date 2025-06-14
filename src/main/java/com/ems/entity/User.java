@@ -2,18 +2,15 @@ package com.ems.entity;
 
 import java.util.UUID;
 
-import javax.persistence.Entity;
-import javax.persistence.GeneratedValue;
-import javax.persistence.GenerationType;
-import javax.persistence.Id;
-import javax.persistence.Table;
+import javax.persistence.*;
 
 @Entity
-@Table(name = "USER", schema = "EMS")
+@Table(name = "USER_REF")
 public class User {
 
 	@Id
-    @GeneratedValue(strategy = GenerationType.AUTO)
+	@GeneratedValue(strategy = GenerationType.AUTO)
+	@Column(columnDefinition = "uuid", updatable = false, nullable = false)
     private UUID userId;
 	
 	private String userName;
