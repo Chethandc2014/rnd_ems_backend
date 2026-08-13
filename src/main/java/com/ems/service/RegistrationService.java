@@ -12,6 +12,8 @@ import com.ems.dto.EmployeeDto;
 import com.ems.entity.Employee;
 import com.ems.util.AppDtoUtil;
 import com.ems.util.AppUtil;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 @Service
@@ -23,6 +25,7 @@ public class RegistrationService {
 	@Autowired
 	EntityManager entityManager;
 	
+	private ObjectMapper objectMapper = new ObjectMapper();
 	
     public ObjectNode regsiter(EmployeeDto dto){
     	this.addEmployee(dto);
@@ -74,14 +77,28 @@ public class RegistrationService {
 			List<Employee> employeeList = entityManager.createQuery("select e from Employee e where upper(e.firstName) like :firstName")
 					.setParameter("firstName", firstName+"%").getResultList();
 			String parsedEmployeeListStr = AppUtil.parseEntityListToString(employeeList);
-			objectNode.put("employeeList", parsedEmployeeListStr);
+			JsonNode jsonNode = objectMapper.readTree(parsedEmployeeListStr);
+			objectNode.set("employeeList", jsonNode);
 			
 		} catch (Exception e) {
 			objectNode.put("fail", e.getMessage());
 		}
 		return objectNode;
 	}
-    
-    
+	
+	
+	public ObjectNode getAllEmployees() {
+		ObjectNode objectNode = AppUtil.getObjectNodeInstance();
+		try {
+			List<Employee> employeeList = entityManager.createQuery("select e from Employee e").getResultList();
+			String parsedEmployeeListStr = AppUtil.parseEntityListToString(employeeList);
+			JsonNode jsonNode = objectMapper.readTree(parsedEmployeeListStr);
+			objectNode.set("employeeList", jsonNode);
+			objectNode.put("success", "Retrieved all employees");
+		} catch (Exception e) {
+			objectNode.put("fail", e.getMessage());
+		}
+		return objectNode;
+	}
 
 }
