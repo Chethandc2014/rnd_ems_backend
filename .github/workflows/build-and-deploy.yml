@@ -1,0 +1,430 @@
+name: Build and Deploy rnd-ems-backend
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - 'release/**'
+    paths:
+      - 'src/**'
+      - 'pom.xml'
+      - 'Dockerfile'
+      - '.github/workflows/build-and-deploy.yml'
+  pull_request:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  DOCKER_HUB_USERNAME: chethandc2014
+
+jobs:
+  # Job 1: Build and Test
+  build:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      packages: write
+    
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 8
+        uses: actions/setup-java@v3
+        with:
+          java-version: '8'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build with Maven
+        run: mvn clean package -DskipTests
+
+      - name: Run Tests
+        run: mvn test
+
+      - name: SonarQube Scan (Optional - requires sonar token)
+        if: always()
+        run: |
+          mvn sonar:sonar \
+            -Dsonar.projectKey=rnd-ems-backend \
+            -Dsonar.sources=src \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.login=${{ secrets.SONAR_TOKEN }} || true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-results
+          path: target/surefire-reports/
+
+      - name: Build Docker image
+        run: docker build -t $IMAGE_NAME:test .
+
+      - name: Test Docker image startup
+        run: |
+          docker run -d --name test-container $IMAGE_NAME:test
+          sleep 10
+          docker logs test-container
+          docker rm -f test-container || true
+
+      - name: Log in to Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+            docker.io/${{ env.DOCKER_HUB_USERNAME }}/rnd-ems-backend
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v4
+        id: build
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  # Job 2: Code Quality Checks
+  code-quality:
+    name: Code Quality Checks
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Hadolint (Dockerfile linting)
+        uses: hadolint/hadolint-action@v2.1.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+        continue-on-error: true
+
+      - name: Check code formatting with Maven
+        run: mvn spotless:check || echo "Code formatting issues found (non-blocking)"
+        continue-on-error: true
+
+  # Job 3: Deploy to Kubernetes (Development)
+  deploy-dev:
+    name: Deploy to Development
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.24.0'
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Verify cluster connection
+        run: kubectl cluster-info
+
+      - name: Create namespace if not exists
+        run: kubectl create namespace ems --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Update image in deployment
+        run: |
+          kubectl set image deployment/rnd-ems-backend \
+            rnd-ems-backend=${{ needs.build.outputs.image-tag }} \
+            -n ems \
+            --record
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/rnd-ems-backend \
+            -n ems \
+            --timeout=5m
+
+      - name: Verify deployment
+        run: kubectl get deployment,pods,svc -n ems
+
+      - name: Run smoke tests
+        run: |
+          POD_NAME=$(kubectl get pods -n ems -l app=rnd-ems-backend -o jsonpath='{.items[0].metadata.name}')
+          kubectl exec -it $POD_NAME -n ems -- curl http://localhost:8080/actuator/health
+
+  # Job 4: Deploy to Kubernetes (Production)
+  deploy-prod:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment:
+      name: production
+      url: https://your-production-url.com
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.24.0'
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Verify cluster connection
+        run: kubectl cluster-info
+
+      - name: Create namespace if not exists
+        run: kubectl create namespace ems --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create deployment backup
+        run: |
+          kubectl get deployment rnd-ems-backend -n ems -o yaml > /tmp/backup-deployment.yaml || true
+
+      - name: Update image in deployment
+        run: |
+          kubectl set image deployment/rnd-ems-backend \
+            rnd-ems-backend=${{ needs.build.outputs.image-tag }} \
+            -n ems \
+            --record
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/rnd-ems-backend \
+            -n ems \
+            --timeout=10m
+
+      - name: Run health checks
+        run: |
+          POD_NAME=$(kubectl get pods -n ems -l app=rnd-ems-backend -o jsonpath='{.items[0].metadata.name}')
+          for i in {1..5}; do
+            kubectl exec -it $POD_NAME -n ems -- curl http://localhost:8080/actuator/health && break
+            sleep 10
+          done
+
+      - name: Verify all pods are running
+        run: |
+          kubectl get pods -n ems
+          kubectl get pods -n ems -l app=rnd-ems-backend --no-headers | wc -l
+
+      - name: Post deployment notification
+        if: always()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          text: 'Production Deployment - rnd-ems-backend'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+          fields: repo,message,commit,author
+        continue-on-error: true
+
+  # Job 5: Security Scanning
+  security-scan:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+        continue-on-error: true
+
+      - name: Upload Trivy results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+        continue-on-error: true
+
+      - name: Run OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'rnd-ems-backend'
+          path: '.'
+          format: 'JSON'
+          args: >
+            --enableExperimental
+        continue-on-error: true
+
+  # Job 6: Performance Testing (Optional)
+  performance-test:
+    name: Performance Testing
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image for testing
+        run: docker build -t rnd-ems-backend:perf-test .
+
+      - name: Start test containers
+        run: |
+          docker-compose -f docker-compose.perf-test.yml up -d
+
+      - name: Wait for services to be ready
+        run: sleep 20
+
+      - name: Run performance tests with Apache JMeter
+        run: |
+          docker run --network host -v $(pwd)/tests:/tests \
+            justb4/jmeter:latest \
+            -n -t /tests/performance-test.jmx \
+            -l /tests/results.jtl \
+            -j /tests/jmeter.log || true
+
+      - name: Generate performance report
+        if: always()
+        run: |
+          docker run --network host -v $(pwd)/tests:/tests \
+            justb4/jmeter:latest \
+            -g /tests/results.jtl \
+            -o /tests/report || true
+
+      - name: Upload performance results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: performance-test-results
+          path: tests/
+
+      - name: Clean up test containers
+        if: always()
+        run: docker-compose -f docker-compose.perf-test.yml down
+
+  # Job 7: Release and Documentation
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/heads/release/') && github.event_name == 'push'
+    
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/heads/release/}" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ steps.version.outputs.VERSION }}
+          release_name: Release v${{ steps.version.outputs.VERSION }}
+          body: |
+            ## Changes in this Release
+            - Docker image: ${{ needs.build.outputs.image-tag }}
+            - Built with Maven and Java 8
+            - Multi-stage Docker build for optimized size
+            
+            ## Deployment
+            This release is ready for production deployment.
+          draft: false
+          prerelease: false
+
+      - name: Update documentation
+        run: |
+          echo "# Release v${{ steps.version.outputs.VERSION }}" >> CHANGELOG.md
+          echo "Date: $(date)" >> CHANGELOG.md
+
+      - name: Commit and push
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add CHANGELOG.md
+          git commit -m "docs: update changelog for release v${{ steps.version.outputs.VERSION }}" || true
+          git push || true
+
+  # Job 8: Notification Summary
+  notify:
+    name: Notification Summary
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [build, code-quality, deploy-dev, deploy-prod, security-scan]
+    
+    steps:
+      - name: Send workflow summary to Slack
+        if: always()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          text: |
+            CI/CD Pipeline Summary for rnd-ems-backend
+            Branch: ${{ github.ref }}
+            Commit: ${{ github.sha }}
+            Author: ${{ github.actor }}
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        continue-on-error: true
+
+      - name: Create job summary
+        run: |
+          echo "# CI/CD Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Workflow:** ${{ github.workflow }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Author:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Job Status:" >> $GITHUB_STEP_SUMMARY
+          echo "- Build: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Code Quality: ${{ needs.code-quality.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Deploy Dev: ${{ needs.deploy-dev.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Deploy Prod: ${{ needs.deploy-prod.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Security: ${{ needs.security-scan.result }}" >> $GITHUB_STEP_SUMMARY

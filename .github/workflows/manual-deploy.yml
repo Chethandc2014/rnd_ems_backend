@@ -1,0 +1,133 @@
+name: Manual Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'develop'
+        type: choice
+        options:
+          - develop
+          - staging
+          - production
+      version:
+        description: 'Version/Tag to deploy (leave empty for latest)'
+        required: false
+        type: string
+      replicas:
+        description: 'Number of replicas'
+        required: true
+        default: '2'
+        type: string
+
+jobs:
+  manual-deploy:
+    name: Manual Deployment to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment }}
+      url: https://your-app-url.com
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Display deployment info
+        run: |
+          echo "## Deployment Information"
+          echo "Environment: ${{ inputs.environment }}"
+          echo "Version: ${{ inputs.version || 'latest' }}"
+          echo "Replicas: ${{ inputs.replicas }}"
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.24.0'
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Verify cluster connection
+        run: kubectl cluster-info
+
+      - name: Check current deployment
+        run: |
+          echo "### Current Deployment Status"
+          kubectl get deployment rnd-ems-backend -n ems -o wide || echo "Deployment not found"
+          kubectl get pods -n ems -l app=rnd-ems-backend -o wide || echo "No pods found"
+
+      - name: Scale deployment
+        run: |
+          kubectl scale deployment/rnd-ems-backend \
+            --replicas=${{ inputs.replicas }} \
+            -n ems
+
+      - name: Update image if version specified
+        if: inputs.version
+        run: |
+          kubectl set image deployment/rnd-ems-backend \
+            rnd-ems-backend=ghcr.io/chethandc2014/rnd-ems-backend:${{ inputs.version }} \
+            -n ems \
+            --record
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/rnd-ems-backend \
+            -n ems \
+            --timeout=10m
+
+      - name: Verify deployment
+        run: |
+          echo "### Deployment Verification"
+          kubectl get deployment rnd-ems-backend -n ems -o wide
+          echo ""
+          echo "### Pod Status"
+          kubectl get pods -n ems -l app=rnd-ems-backend -o wide
+
+      - name: Health check
+        run: |
+          POD=$(kubectl get pods -n ems -l app=rnd-ems-backend -o jsonpath='{.items[0].metadata.name}')
+          if [ -n "$POD" ]; then
+            echo "Health check on pod: $POD"
+            kubectl exec -it $POD -n ems -- curl -s http://localhost:8080/actuator/health | jq . || echo "Health check failed"
+          fi
+
+      - name: Create deployment record
+        run: |
+          mkdir -p deployment-records
+          cat > deployment-records/${{ inputs.environment }}-${{ github.run_number }}.txt << EOF
+          Deployment Record
+          -----------------
+          Environment: ${{ inputs.environment }}
+          Version: ${{ inputs.version || 'latest' }}
+          Replicas: ${{ inputs.replicas }}
+          Timestamp: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          Deployed By: ${{ github.actor }}
+          Deployment ID: ${{ github.run_id }}
+          EOF
+          cat deployment-records/${{ inputs.environment }}-${{ github.run_number }}.txt
+
+      - name: Notify Slack
+        if: always()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          text: |
+            Manual Deployment - ${{ inputs.environment }}
+            Version: ${{ inputs.version || 'latest' }}
+            Replicas: ${{ inputs.replicas }}
+            Status: ${{ job.status }}
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        continue-on-error: true
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "Deployment failed! Rolling back..."
+          kubectl rollout undo deployment/rnd-ems-backend -n ems
+          kubectl rollout status deployment/rnd-ems-backend -n ems --timeout=5m
