@@ -2,9 +2,9 @@ name: Docker Image CI
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "feature/rnd-ems-backend/cicd-integration" ]
   pull_request:
-    branches: [ "master" ]
+    branches: [ "feature/rnd-ems-backend/cicd-integration" ]
 
 jobs:
 
