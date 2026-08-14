@@ -39,6 +39,14 @@ public class RegistrationController {
 
 	}
 	
+	
+	@RequestMapping(path = "/employees", method = RequestMethod.GET, produces= { MediaType.APPLICATION_JSON_VALUE })
+	public ObjectNode getAllEmployees() {
+
+		ObjectNode objectNode = registrationService.getAllEmployees();
+		return objectNode;
+
+	}
 
 	@RequestMapping(path = "/user", method = RequestMethod.PUT, consumes = { MediaType.APPLICATION_JSON_VALUE },produces= { MediaType.APPLICATION_JSON_VALUE })
 	public ObjectNode updateEmployee(@RequestBody EmployeeDto employee) {

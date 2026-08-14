@@ -15,7 +15,7 @@ public class Employee {
 
 	@Id
 	@GeneratedValue(strategy = GenerationType.AUTO)
-	private UUID employeeId;
+	private Integer employeeId;
 
 	private String firstName;
 	private String lastName;
@@ -63,11 +63,11 @@ public class Employee {
 		this.dateOfBirth = dateOfBirth;
 	}
 
-	public UUID getEmployeeId() {
+	public Integer getEmployeeId() {
 		return employeeId;
 	}
 
-	public void setEmployeeId(UUID employeeId) {
+	public void setEmployeeId(Integer employeeId) {
 		this.employeeId = employeeId;
 	}
 
